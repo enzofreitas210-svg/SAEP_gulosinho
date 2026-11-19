@@ -1,0 +1,346 @@
+DROP VIEW IF EXISTS vw_cronograma_prazos CASCADE;
+DROP VIEW IF EXISTS vw_painel_principal CASCADE;
+
+
+DROP TABLE IF EXISTS historico_tarefas CASCADE;
+DROP TABLE IF EXISTS tarefas CASCADE;
+DROP TABLE IF EXISTS categorias CASCADE;
+DROP TABLE IF EXISTS colaboradores CASCADE;
+
+
+DROP FUNCTION IF EXISTS fn_buscar_colaboradores(TEXT);
+DROP FUNCTION IF EXISTS fn_validar_tarefa();
+DROP FUNCTION IF EXISTS fn_registrar_historico();
+
+
+
+
+CREATE TABLE colaboradores (
+    id_colaborador SERIAL PRIMARY KEY,
+    nome VARCHAR(100) NOT NULL,
+    email VARCHAR(100) UNIQUE NOT NULL,
+    senha VARCHAR(100) NOT NULL,
+    ativo BOOLEAN NOT NULL DEFAULT TRUE
+);
+
+
+
+
+CREATE TABLE categorias (
+    id_categoria SERIAL PRIMARY KEY,
+    nome_categoria VARCHAR(100) NOT NULL UNIQUE,
+    descricao TEXT
+);
+
+
+
+
+CREATE TABLE tarefas (
+    id_tarefa SERIAL PRIMARY KEY,
+    titulo VARCHAR(150) NOT NULL,
+    descricao TEXT,
+    id_colaborador INTEGER NOT NULL,
+    id_categoria INTEGER NOT NULL,
+    data_criacao TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    prazo_entrega DATE NOT NULL,
+    status VARCHAR(30) NOT NULL DEFAULT 'Pendente',
+
+
+    CONSTRAINT fk_tarefa_colaborador
+        FOREIGN KEY (id_colaborador)
+        REFERENCES colaboradores(id_colaborador),
+
+
+    CONSTRAINT fk_tarefa_categoria
+        FOREIGN KEY (id_categoria)
+        REFERENCES categorias(id_categoria),
+
+
+    CONSTRAINT chk_status
+        CHECK (status IN (
+            'Pendente',
+            'Em andamento',
+            'Concluida',
+            'Cancelada'
+        )),
+
+
+    CONSTRAINT chk_prazo
+        CHECK (prazo_entrega >= DATE '2020-01-01')
+);
+
+
+
+
+CREATE TABLE historico_tarefas (
+    id_historico SERIAL PRIMARY KEY,
+    id_tarefa INTEGER NOT NULL,
+    descricao_acao TEXT NOT NULL,
+    data_registro TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+
+
+    CONSTRAINT fk_historico_tarefa
+        FOREIGN KEY (id_tarefa)
+        REFERENCES tarefas(id_tarefa)
+        ON DELETE CASCADE
+);
+
+
+
+
+INSERT INTO colaboradores (nome, email, senha, ativo)
+VALUES
+('Ana Silva', 'ana@empresa.com', '123456', TRUE),
+('Carlos Souza', 'carlos@empresa.com', '654321', TRUE),
+('Mariana Lima', 'mariana@empresa.com', 'abcdef', TRUE);
+
+
+
+
+INSERT INTO categorias (nome_categoria, descricao)
+VALUES
+('Desenvolvimento', 'Tarefas relacionadas ao desenvolvimento'),
+('Documentacao', 'Tarefas relacionadas a documentos'),
+('Planejamento', 'Tarefas de organizacao e planejamento');
+
+
+
+
+INSERT INTO tarefas
+(titulo, descricao, id_colaborador, id_categoria, prazo_entrega, status)
+VALUES
+(
+    'Criar sistema de cadastro',
+    'Desenvolver modulo de cadastro de usuarios',
+    1,
+    1,
+    CURRENT_DATE + 5,
+    'Em andamento'
+),
+(
+    'Elaborar documentacao',
+    'Criar documentacao do projeto',
+    2,
+    2,
+    CURRENT_DATE + 10,
+    'Pendente'
+),
+(
+    'Planejar cronograma',
+    'Organizar as etapas do projeto',
+    3,
+    3,
+    CURRENT_DATE + 15,
+    'Pendente'
+);
+
+
+
+
+CREATE OR REPLACE FUNCTION fn_buscar_colaboradores(
+    p_termo TEXT
+)
+RETURNS TABLE (
+    id_colaborador INTEGER,
+    nome VARCHAR(100),
+    email VARCHAR(100),
+    ativo BOOLEAN
+)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+
+
+    RETURN QUERY
+
+
+    SELECT
+        c.id_colaborador,
+        c.nome,
+        c.email,
+        c.ativo
+
+
+    FROM colaboradores c
+
+
+    WHERE
+        c.nome ILIKE '%' || p_termo || '%'
+        OR
+        c.email ILIKE '%' || p_termo || '%';
+
+
+END;
+$$;
+
+
+
+
+CREATE OR REPLACE FUNCTION fn_validar_tarefa()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+
+
+
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM colaboradores
+        WHERE id_colaborador = NEW.id_colaborador
+        AND ativo = TRUE
+    ) THEN
+
+
+        RAISE EXCEPTION
+        'Erro: tarefa deve estar vinculada a um colaborador ativo.';
+
+
+    END IF;
+
+
+
+
+
+
+    NEW.data_criacao := CURRENT_TIMESTAMP;
+
+
+
+
+    RETURN NEW;
+
+
+END;
+$$;
+
+
+
+
+CREATE TRIGGER trg_validar_tarefa
+
+
+BEFORE INSERT ON tarefas
+
+
+FOR EACH ROW
+
+
+EXECUTE FUNCTION fn_validar_tarefa();
+
+
+
+
+CREATE OR REPLACE FUNCTION fn_registrar_historico()
+RETURNS TRIGGER
+LANGUAGE plpgsql
+AS $$
+BEGIN
+
+
+    INSERT INTO historico_tarefas (
+        id_tarefa,
+        descricao_acao,
+        data_registro
+    )
+
+
+    VALUES (
+        NEW.id_tarefa,
+        'Tarefa criada: ' || NEW.titulo,
+        CURRENT_TIMESTAMP
+    );
+
+
+    RETURN NEW;
+
+
+END;
+$$;
+
+
+
+
+CREATE TRIGGER trg_registrar_historico
+
+
+AFTER INSERT ON tarefas
+
+
+FOR EACH ROW
+
+
+EXECUTE FUNCTION fn_registrar_historico();
+
+
+
+
+CREATE OR REPLACE VIEW vw_painel_principal AS
+
+
+SELECT
+    c.nome AS nome_colaborador,
+    t.titulo AS titulo_tarefa,
+    cat.nome_categoria AS categoria,
+    t.prazo_entrega,
+    t.status
+
+
+FROM tarefas t
+
+
+INNER JOIN colaboradores c
+    ON t.id_colaborador = c.id_colaborador
+
+
+INNER JOIN categorias cat
+    ON t.id_categoria = cat.id_categoria;
+
+
+
+
+
+
+CREATE OR REPLACE VIEW vw_cronograma_prazos AS
+
+
+SELECT
+    t.id_tarefa,
+    t.titulo AS titulo_tarefa,
+    t.status,
+    t.prazo_entrega,
+
+
+    (t.prazo_entrega - CURRENT_DATE)
+        AS dias_restantes,
+
+
+    c.nome AS nome_responsavel
+
+
+FROM tarefas t
+
+
+INNER JOIN colaboradores c
+    ON t.id_colaborador = c.id_colaborador
+
+
+ORDER BY
+    t.prazo_entrega ASC,
+    t.id_tarefa ASC;
+
+
+SELECT * FROM colaboradores;
+
+
+SELECT * FROM categorias;
+
+
+SELECT * FROM tarefas;
+
+
+SELECT * FROM historico_tarefas;
+
+
+SELECT * FROM fn_buscar_colaboradores('Ana');
